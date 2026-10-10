@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><title>合成Crystal · 双人版</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#e9dfca;color:#382d23;font-family:"Microsoft YaHei",Arial,sans-serif;display:flex;justify-content:center}.wrap{width:min(100%,620px);padding:10px}.top,.line{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.title{font-size:22px;font-weight:800}.panel{background:#fff7e8;border-radius:12px;padding:10px;margin:8px 0;font-size:13px}button,select,input{font:inherit;border:0;border-radius:9px;padding:8px 10px;background:#fffdf5;color:#493a2d;box-shadow:0 2px 6px #0001}button{cursor:pointer}.primary{background:#6e9d52;color:#fff}.seg{display:flex;gap:6px}.seg button.active{background:#6e9d52;color:#fff}.game{width:100%;aspect-ratio:500/760;background:#fffdf5;border-radius:18px;overflow:hidden;box-shadow:0 8px 28px #5b493322}.game canvas{width:100%;height:100%;display:block;touch-action:none}.status{color:#7b6854}.items{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px}.item{padding:8px 4px;text-align:center;background:#fffdf5;border-radius:10px;font-size:12px}.item button{display:block;width:100%;margin:5px 0;padding:6px 2px}.item small{display:block;color:#88745d;min-height:28px}.item button:disabled{opacity:.4;cursor:not-allowed}.hint{font-size:12px;color:#756554;line-height:1.6}.pill{background:#eee1c9;border-radius:99px;padding:3px 9px;font-weight:700}.roomrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.roomrow input{min-width:0;flex:1}.log{min-height:18px;color:#7a654e;margin-top:6px}.bar+.bar{margin-top:10px}#pads button{touch-action:none;user-select:none;min-width:64px}
+</style></head><body><div class="wrap" id="wrap">
+<div class="top"><div class="title">🍉 合成Crystal · 双人版</div><div><button id="pauseBtn">暂停</button> <button id="restartBtn">重开</button></div></div>
+<div class="panel">
+<div class="line"><b>游戏模式</b><div class="seg"><button id="singleBtn">单人</button><button id="coopBtn">合作</button><button id="battleBtn">对战</button></div></div>
+<div class="line" id="netRow" style="margin-top:6px"><b>游玩方式</b><div class="seg"><button id="localBtn">同屏（一台设备）</button><button id="onlineBtn">联网（两台设备）</button></div></div>
+<p id="modeDesc"></p>
+<div class="roomrow" id="roomHostRow"><input id="myId" readonly placeholder="正在生成房间码……"><button id="copyBtn">复制房间码</button><button id="newRoomBtn">重新生成</button></div>
+<div class="roomrow" id="roomJoinRow"><input id="peerId" placeholder="输入朋友的房间码"><button id="connectBtn" class="primary">连接朋友</button><button id="disconnectBtn">断开</button></div>
+<div class="status" id="netStatus"></div></div>
+<div class="game"><canvas id="game" width="500" height="760"></canvas></div>
+<div class="panel" id="scores"></div>
+<div class="panel" id="pads" style="display:none"><div class="line" style="margin-bottom:6px"><span class="pill" style="color:#4d7a37">P1</span><button data-pad="0L">◀</button><button data-pad="0D" class="primary">投放</button><button data-pad="0R">▶</button></div><div class="line"><span class="pill" style="color:#3b6fa8">P2</span><button data-pad="1L">◀</button><button data-pad="1D" class="primary">投放</button><button data-pad="1R">▶</button></div></div>
+<div class="panel"><div id="items"></div><div class="hint" style="margin-top:8px">每累计合成 5/10/15/20 次，分别获得 1 个 炸弹/胶水/喷雾/打乱（可反复获得）。单人/合作：道具帮自己；对战：道具攻击对手。</div><div id="log" class="log"></div></div>
+<div class="hint" style="text-align:center">键盘：P1 A/D 移动 · 空格/S 投放　P2 ←/→ 移动 · 回车/↓ 投放　P 暂停 · R 重开<br>触屏/鼠标：点击或滑动箱子投放（对战同屏时左右两边各管一个箱子）</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/matter-js@0.20.0/build/matter.min.js"></script><script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(()=>{'use strict';
+const el=id=>document.getElementById(id);
+if(!window.Matter){el('netStatus').textContent='物理引擎加载失败，请检查网络后刷新。';return}
+const {Engine,World,Bodies,Body}=Matter,W=500,H=760,FLOOR=725,DANGER=155,DROP_Y=82,MAX=11,FONT='Microsoft YaHei,Arial';
+const R=[18,22,26,31,37,44,52,60,70,82,96],colors=['#eb4852','#e03744','#f59330','#f6c53d','#5cb04e','#f1765d','#ffb037','#479f4f','#d2524b','#66b149','#4cab54'],dark=['#ae2937','#a32330','#c56417','#c28f1c','#31762f','#c44940','#c27119','#22672f','#9e2d2b','#347731','#236d2e'];
+const TH={bomb:5,glue:10,spray:15,shuffle:20},NM={bomb:'💣炸弹',glue:'🧴胶水',spray:'💨喷雾',shuffle:'🔀打乱'};
+const DS=[{bomb:'清除部分低阶水果',glue:'下落变慢 7 秒',spray:'场内水果缩小降一级',shuffle:'随机改变水果等级'},{bomb:'炸飞对手箱子里的水果',glue:'对手 6 秒内只能慢速投放',spray:'喷雾遮住对手视线 6 秒',shuffle:'随机打乱对手水果等级'}];
+const PC=['#6e9d52','#4a86c8'],KA={L:'KeyA',R:'KeyD'},KB={L:'ArrowLeft',R:'ArrowRight'};
+const canvas=el('game'),ctx=canvas.getContext('2d');
+let mode='single',net='local',paused=false,conn=null,peer=null,isHost=false,boards=[],imgs={},keys={},pads={},gLast=0;
+const online=()=>net==='online'&&!!conn&&conn.open;
+const eff=()=>mode==='single'||(net==='online'&&!online())?'single':mode;
+const matchOver=()=>boards.some(b=>b.over);
+const say=t=>el('log').textContent=t;
+const send=d=>{try{if(conn&&conn.open)conn.send(d)}catch(e){}};
+function weighted(){const a=[30,25,19,13,8,4,1],s=a.reduce((x,y)=>x+y,0);let r=Math.random()*s;for(let i=0;i<a.length;i++)if((r-=a[i])<0)return i+1;return 1}
+function newBoard(np,remote){const B={remote,balls:[],rballs:[],score:0,merges:0,items:{bomb:0,glue:0,spray:0,shuffle:0},over:false,overSince:new Map(),glueUntil:0,fogUntil:0,gravUntil:0,fog:false,
+ players:Array.from({length:np},()=>({x:250,cur:weighted(),next:weighted(),last:0}))};
+ if(!remote){B.engine=Engine.create();B.world=B.engine.world;B.world.gravity.y=1.1;World.add(B.world,[Bodies.rectangle(250,FLOOR+8,500,16,{isStatic:true,restitution:.08,friction:.72}),Bodies.rectangle(-5,407,10,650,{isStatic:true}),Bodies.rectangle(505,407,10,650,{isStatic:true})])}
+ return B}
+function build(){const m=eff();paused=false;
+ boards=m==='single'?[newBoard(1)]:m==='coop'?[newBoard(2,net==='online'&&!isHost)]:[newBoard(1),newBoard(1,online())];
+ canvas.width=m==='battle'?1000:500;el('wrap').style.width=m==='battle'?'min(100%,1040px)':'min(100%,620px)';document.querySelector('.game').style.aspectRatio=canvas.width+'/'+H;
+ el('pads').style.display=(m!=='single'&&!online())?'block':'none';renderItems();updateModeUI();syncUI()}
+function reset(){build();say('新的一局开始！');if(online())send({type:'restart'})}
+// 控制映射：玩家编号 -> [箱子序号, 该箱子里的投放器序号]
+function ctl(pn){const m=eff(),on=online();if(m==='single')return pn?null:[0,0];if(m==='coop')return on?(pn?null:[0,isHost?0:1]):[0,pn];return on?(pn?null:[0,0]):[pn,0]}
+function makeBall(B,l,x,y){const b=Bodies.circle(x,y,R[l-1],{restitution:.16,friction:.62,density:.0015,label:'fruit',plugin:{level:l}});B.balls.push(b);World.add(B.world,b);return b}
+function drop(bi,pi){const B=boards[bi];if(!B||paused||B.over||matchOver())return;const P=B.players[pi],n=performance.now();
+ if(B.remote){if(n-gLast<160)return;gLast=n;send({type:'drop',x:P.x});return}
+ if(n-P.last<(n<B.glueUntil?1600:160))return;P.last=n;const l=P.cur,r=R[l-1];makeBall(B,l,Math.max(r+3,Math.min(W-r-3,P.x)),DROP_Y);P.cur=P.next;P.next=weighted()}
+function merge(B,a,b){const la=a.plugin.level,x=(a.position.x+b.position.x)/2,y=(a.position.y+b.position.y)/2,vx=(a.velocity.x+b.velocity.x)/4,vy=(a.velocity.y+b.velocity.y)/4-.8;
+ World.remove(B.world,a);World.remove(B.world,b);B.balls=B.balls.filter(z=>z!==a&&z!==b);const nl=la+1;B.score+=nl*10;B.merges++;
+ const n=makeBall(B,nl,Math.max(R[nl-1]+2,Math.min(W-R[nl-1]-2,x)),Math.max(DANGER-10,Math.min(FLOOR-R[nl-1]-2,y)));Body.setVelocity(n,{x:vx,y:vy});
+ for(const k in TH)if(B.merges%TH[k]===0){B.items[k]++;say(`合成 ${B.merges} 次，获得${NM[k]}！`)}}
+function collide(B){for(let i=0;i<B.balls.length;i++)for(let j=i+1;j<B.balls.length;j++){const a=B.balls[i],b=B.balls[j],l=a.plugin.level;if(l!==b.plugin.level||l>=MAX)continue;if(Math.hypot(a.position.x-b.position.x,a.position.y-b.position.y)<=a.circleRadius+b.circleRadius+1){merge(B,a,b);return true}}return false}
+function danger(B,n){if(B.over)return;for(const b of B.balls){const v=Math.hypot(b.velocity.x,b.velocity.y);if(b.position.y-b.circleRadius*.35<DANGER&&v<.7){const t=B.overSince.get(b.id)||n;B.overSince.set(b.id,t);if(n-t>1050){B.over=true;say('游戏结束！');return}}else B.overSince.delete(b.id)}}
+function step(B){Engine.update(B.engine,1000/60);const n=performance.now();if(B.gravUntil&&n>B.gravUntil){B.gravUntil=0;B.world.gravity.y=1.1;say('道具效果结束。')}let c=true,g=0;while(c&&g++<50)c=collide(B);danger(B,n)}
+function shuffle(B){B.balls.forEach(b=>{const o=b.plugin.level,n=weighted();if(n!==o){Body.scale(b,R[n-1]/R[o-1],R[n-1]/R[o-1]);b.plugin.level=n}})}
+function help(B,k){const n=performance.now();
+ if(k==='bomb'){const s=[...B.balls].sort((a,b)=>b.plugin.level-a.plugin.level),rm=s.filter(b=>b.plugin.level<=3).slice(0,Math.max(3,Math.ceil(s.length*.3)));rm.forEach(b=>World.remove(B.world,b));B.balls=B.balls.filter(b=>!rm.includes(b));say('炸弹爆炸：清除了部分低阶水果！')}
+ else if(k==='glue'){B.gravUntil=n+7000;B.world.gravity.y=.38;say('胶水生效：水果下落变慢 7 秒！')}
+ else if(k==='spray'){B.balls.forEach(b=>{const l=b.plugin.level;if(l>1){b.plugin.level=l-1;Body.scale(b,R[l-2]/R[l-1],R[l-2]/R[l-1])}});say('喷雾生效：水果缩小并降一级！')}
+ else{shuffle(B);say('打乱生效：水果等级已随机改变！')}}
+function attack(B,k){const n=performance.now();
+ if(k==='bomb')B.balls.forEach(b=>Body.setVelocity(b,{x:(Math.random()-.5)*18,y:-6-Math.random()*10}));
+ else if(k==='glue')B.glueUntil=n+6000;else if(k==='spray')B.fogUntil=n+6000;else shuffle(B);
+ say(`${NM[k]}命中！`)}
+function useItem(bi,k){const B=boards[bi];if(!B||paused||matchOver())return;
+ if(B.remote){if(B.items[k]>0)send({type:'use',k});return}
+ if(B.items[k]<=0){say('道具数量不足！');return}B.items[k]--;
+ if(eff()==='battle'){const T=boards[1-bi];if(T.remote)send({type:'atk',k});else attack(T,k);say(`已对对手使用${NM[k]}！`)}else help(B,k);syncUI()}
+function renderItems(){const m=eff(),on=online(),bars=m==='battle'?(on?[0]:[0,1]):[0],d=DS[m==='battle'?1:0];
+ el('items').innerHTML=bars.map(bi=>`<div class="bar"><b>${m==='battle'?(on?'我的道具（攻击对手）':`玩家${bi+1} 道具（攻击对手）`):(m==='coop'?'共享道具栏':'道具栏')}</b><div class="items">${Object.keys(TH).map(k=>`<div class="item">${NM[k]}<small>${d[k]}</small><button data-b="${bi}" data-k="${k}">0 个</button><small>每合成 ${TH[k]} 次</small></div>`).join('')}</div></div>`).join('')}
+function syncUI(){if(!boards.length)return;const m=eff(),on=online(),[a,b]=boards;
+ el('scores').innerHTML=m==='single'?`分数：<b>${a.score}</b> · 合成：<b>${a.merges}</b>`:m==='coop'?`共同分数：<b>${a.score}</b> · 合成：<b>${a.merges}</b>`:`${on?'我':'玩家1'}：<b>${a.score}</b>（合成 ${a.merges}） · ${on?'对手':'玩家2'}：<b>${b.score}</b>（合成 ${b.merges}）`;
+ document.querySelectorAll('[data-k]').forEach(btn=>{const B=boards[+btn.dataset.b];if(!B)return;const k=btn.dataset.k;btn.textContent=B.items[k]+' 个';btn.disabled=B.items[k]<=0||paused||matchOver()})}
+// ---------- 联网 ----------
+function snap(B){return{b:B.balls.map(b=>[b.plugin.level,Math.round(b.position.x),Math.round(b.position.y)]),sc:B.score,mg:B.merges,it:B.items,p:B.players.map(p=>[p.cur,p.next,Math.round(p.x)]),ov:B.over?1:0,fog:performance.now()<B.fogUntil?1:0}}
+function applySnap(B,s){const me=B.players.length>1?(isHost?0:1):-1,old=B.players;B.rballs=s.b;B.score=s.sc;B.merges=s.mg;B.items=s.it;B.over=!!s.ov;B.fog=!!s.fog;B.players=s.p.map((q,i)=>({cur:q[0],next:q[1],x:(i===me&&old[i])?old[i].x:q[2],last:0}))}
+function netMsg(t){el('netStatus').textContent=t}
+function connectPeer(){if(!window.Peer){netMsg('联网模块加载失败；同屏和单人仍可游玩。请检查网络后刷新以启用联网。');return}
+ peer=new Peer(`crystal-${Math.random().toString(36).slice(2,8)}`,{debug:1});
+ peer.on('open',id=>{el('myId').value=id;if(!online())netMsg('已准备好联网。把房间码发给朋友，或输入朋友的房间码。')});
+ peer.on('connection',c=>{if(conn&&conn.open){c.close();return}conn=c;isHost=true;bindConn()});
+ peer.on('error',e=>{netMsg('联网错误：'+e.type+'。同屏和单人仍可游玩；可点“重新生成”再试。');if(e.type==='unavailable-id'){try{peer.destroy()}catch(_){}peer=null;setTimeout(connectPeer,500)}});
+ peer.on('disconnected',()=>{try{peer.reconnect()}catch(_){}})}
+function bindConn(){const c=conn;
+ c.on('open',()=>{net='online';if(isHost){if(mode==='single')mode='coop';send({type:'hello',mode})}build();netMsg('已连接！'+(isHost?'你是房主。':'')+'可以开始游戏。')});
+ c.on('data',handleData);c.on('close',()=>{if(conn===c){conn=null;build();netMsg('连接已断开，已回到单机状态。')}});c.on('error',()=>netMsg('连接出现问题。'))}
+function handleData(d){if(!d||!d.type)return;
+ if(d.type==='hello'||d.type==='mode'){mode=d.mode;net='online';build()}
+ else if(d.type==='restart'){build();say('对方重开了本局。')}
+ else if(d.type==='snap'){const m=eff(),B=m==='coop'?boards[0]:m==='battle'?boards[1]:null;if(B&&B.remote)applySnap(B,d.s)}
+ else if(d.type==='drop'){if(eff()==='coop'&&isHost){boards[0].players[1].x=d.x;drop(0,1)}}
+ else if(d.type==='aim'){if(eff()==='coop'&&isHost)boards[0].players[1].x=d.x}
+ else if(d.type==='use'){if(eff()==='coop'&&isHost){const B=boards[0];if(B.items[d.k]>0&&!B.over){B.items[d.k]--;help(B,d.k)}}}
+ else if(d.type==='atk'){if(eff()==='battle')attack(boards[0],d.k)}}
+// ---------- 界面 ----------
+function updateModeUI(){['single','coop','battle'].forEach(k=>el(k+'Btn').classList.toggle('active',mode===k));['local','online'].forEach(k=>el(k+'Btn').classList.toggle('active',net===k));
+ el('netRow').style.display=mode==='single'?'none':'flex';const room=mode!=='single'&&net==='online';el('roomHostRow').style.display=el('roomJoinRow').style.display=room?'flex':'none';
+ const d={single:'单人模式：无需联网，独自合成水果挑战高分。',coop:net==='online'?'合作·联网：两人共用同一个箱子，各自控制自己的投放器，一起合成、一起冲分。':'合作·同屏：两人在同一个箱子里一起操作，各有自己的投放器和“下一颗”。P1 绿色 / P2 蓝色。',battle:net==='online'?'对战·联网：各自一个箱子，实时看到对方的箱子；合成攒道具攻击对手，先堆满危险线的一方输。':'对战·同屏：左右两个箱子，P1 在左、P2 在右；合成攒道具攻击对方，先堆满危险线的一方输。'};
+ el('modeDesc').textContent=d[mode];if(room&&!online())netMsg(el('myId').value?'等待连接朋友……（未连接前以单人方式游玩）':'正在初始化联网模块……')}
+function changeMode(m){mode=m;build();if(online())send({type:'mode',mode:m})}
+function changeNet(n){net=n;if(n==='online'&&!peer)connectPeer();build()}
+function togglePause(){if(matchOver())return;if(online()){say('联网对战/合作时不能暂停。');return}paused=!paused;syncUI()}
+// ---------- 绘制 ----------
+function drawFruit(x,y,r,l){const im=imgs[l];ctx.fillStyle=dark[l-1];ctx.beginPath();ctx.arc(x,y,r+1,0,Math.PI*2);ctx.fill();
+ if(im&&im.complete&&im.naturalWidth>0){const s=Math.min(im.naturalWidth,im.naturalHeight),sx=(im.naturalWidth-s)/2,sy=(im.naturalHeight-s)/2;ctx.save();ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.clip();ctx.drawImage(im,sx,sy,s,s,x-r,y-r,2*r,2*r);ctx.restore();ctx.strokeStyle='rgba(255,255,255,.35)';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(x,y,r-.75,0,Math.PI*2);ctx.stroke();return}
+ ctx.fillStyle=colors[l-1];ctx.beginPath();ctx.arc(x,y-1,r,0,Math.PI*2);ctx.fill();ctx.fillStyle='rgba(255,255,255,.8)';ctx.beginPath();ctx.arc(x-r*.31,y-r*.32,Math.max(2,r*.16),0,Math.PI*2);ctx.fill()}
+function loadAsset(i,ex,k=0){if(k>=ex.length)return;const im=new Image();im.onload=()=>{imgs[i]=im};im.onerror=()=>loadAsset(i,ex,k+1);im.src=`assets/${i}.${ex[k]}`}
+function drawBoard(B,ox,title){const n=performance.now(),m=eff(),two=B.players.length>1;ctx.save();ctx.translate(ox,0);ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();
+ ctx.fillStyle='#f8f1dc';ctx.fillRect(0,0,W,H);ctx.fillStyle='#fffaf0';ctx.fillRect(0,0,W,95);ctx.strokeStyle='#e8dcc6';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(0,94);ctx.lineTo(W,94);ctx.stroke();
+ ctx.fillStyle='#382d23';ctx.font='bold 25px '+FONT;ctx.fillText(title,18,36);ctx.fillStyle='#7d6956';ctx.font='15px '+FONT;ctx.fillText(`分数 ${B.score}  合成 ${B.merges}`,18,68);
+ ctx.font='12px '+FONT;ctx.textAlign='center';B.players.forEach((P,i)=>{const cx=455-i*(two?66:0),r=two?24:30;ctx.fillStyle='#7d6956';ctx.fillText(two?`P${i+1} 下一颗`:'下一颗',cx,two?14:20);ctx.fillStyle='#ebe3d3';ctx.beginPath();ctx.arc(cx,57,r,0,Math.PI*2);ctx.fill();drawFruit(cx,57,Math.min(r-6,R[P.next-1]*.42),P.next)});ctx.textAlign='left';
+ ctx.fillStyle='#fffdf5';ctx.fillRect(0,95,W,FLOOR-95);ctx.strokeStyle='#e1746c';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(0,DANGER);ctx.lineTo(W,DANGER);ctx.stroke();ctx.fillStyle='#d74a44';ctx.font='13px '+FONT;ctx.fillText('危险线',8,DANGER-5);
+ ctx.fillStyle='#dbc6a3';ctx.fillRect(0,FLOOR+5,W,H-FLOOR-5);ctx.strokeStyle='#af976f';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(0,FLOOR);ctx.lineTo(W,FLOOR);ctx.stroke();
+ const L=B.remote?B.rballs:B.balls.map(b=>[b.plugin.level,b.position.x,b.position.y]);L.sort((a,b)=>b[0]-a[0]).forEach(q=>drawFruit(q[1],q[2],R[q[0]-1],q[0]));
+ if(B.remote?B.fog:n<B.fogUntil){ctx.fillStyle='rgba(255,255,255,.94)';ctx.fillRect(0,95,W,FLOOR-95);ctx.font='70px serif';ctx.textAlign='center';ctx.fillText('💨 ☁️ 💨',250,330);ctx.font='bold 20px '+FONT;ctx.fillStyle='#8a7458';ctx.fillText('被喷雾遮住了视线！',250,400);ctx.textAlign='left'}
+ if(!B.over&&!matchOver())B.players.forEach((P,i)=>{const r=R[P.cur-1],x=Math.max(r+4,Math.min(W-r-4,P.x));ctx.strokeStyle=two?PC[i]:'#c1ae91';ctx.lineWidth=2;ctx.setLineDash([4,5]);ctx.beginPath();ctx.moveTo(x,96);ctx.lineTo(x,DROP_Y-r+8);ctx.stroke();ctx.setLineDash([]);drawFruit(x,DROP_Y,r,P.cur);if(two){ctx.fillStyle=PC[i];ctx.beginPath();ctx.arc(x,DROP_Y,13,0,Math.PI*2);ctx.fill();ctx.fillStyle='#fff';ctx.font='bold 13px '+FONT;ctx.textAlign='center';ctx.fillText('P'+(i+1),x,DROP_Y+5);ctx.textAlign='left'}});
+ if(matchOver()){ctx.fillStyle='rgba(20,15,10,.45)';ctx.fillRect(0,0,W,H);ctx.fillStyle='#fff6e2';ctx.beginPath();(ctx.roundRect||ctx.rect).call(ctx,78,260,344,235,25);ctx.fill();ctx.textAlign='center';
+  const bat=m==='battle';ctx.fillStyle=bat?(B.over?'#d74a44':'#4d7a37'):'#d74a44';ctx.font='bold 34px '+FONT;ctx.fillText(bat?(B.over?'你输了 💥':'你赢了 🏆'):'游戏结束',250,330);ctx.fillStyle='#382d23';ctx.font='bold 22px '+FONT;ctx.fillText(`得分：${B.score}`,250,385);ctx.font='16px '+FONT;ctx.fillText('按 R 或点击“重开”',250,435);ctx.textAlign='left'}
+ ctx.restore()}
+function draw(){ctx.clearRect(0,0,canvas.width,H);const m=eff();boards.forEach((B,i)=>drawBoard(B,i*W,m==='battle'?(online()?(i?'对手':'我'):'玩家'+(i+1)):m==='coop'?'合作模式':'单人模式'));
+ if(m==='battle'){ctx.fillStyle='#8a7458';ctx.fillRect(W-2,0,4,H)}
+ if(paused){ctx.fillStyle='rgba(20,15,10,.42)';ctx.fillRect(0,0,canvas.width,H);ctx.fillStyle='#fff6e2';ctx.font='bold 34px '+FONT;ctx.textAlign='center';ctx.fillText('游戏暂停 · 按 P 继续',canvas.width/2,H/2);ctx.textAlign='left'}}
+// ---------- 输入 ----------
+function ptr(cx,down){const m=eff();let pn=0,x=cx;if(m==='battle'){const h=cx>=W?1:0;if(online()&&h)return;pn=h;x=cx-h*W}const c=ctl(pn);if(!c)return;boards[c[0]].players[c[1]].x=x;if(down)drop(c[0],c[1])}
+const cxOf=v=>{const r=canvas.getBoundingClientRect();return(v-r.left)*canvas.width/r.width};
+canvas.addEventListener('mousemove',e=>ptr(cxOf(e.clientX),false));canvas.addEventListener('mousedown',e=>{if(e.button===0)ptr(cxOf(e.clientX),true)});
+canvas.addEventListener('touchstart',e=>{for(const t of e.changedTouches)ptr(cxOf(t.clientX),true);e.preventDefault()},{passive:false});
+canvas.addEventListener('touchmove',e=>{for(const t of e.changedTouches)ptr(cxOf(t.clientX),false);e.preventDefault()},{passive:false});
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;keys[e.code]=true;if(['Space','ArrowLeft','ArrowRight','ArrowDown','ArrowUp'].includes(e.code))e.preventDefault();if(e.repeat)return;
+ if(['Space','KeyS','KeyW'].includes(e.code)){const c=ctl(0);if(c)drop(c[0],c[1])}
+ else if(['Enter','ArrowDown','ArrowUp'].includes(e.code)){const c=ctl(1)||ctl(0);if(c)drop(c[0],c[1])}
+ else if(e.code==='KeyP')togglePause();else if(e.code==='KeyR')reset()});
+document.addEventListener('keyup',e=>{keys[e.code]=false});
+document.querySelectorAll('[data-pad]').forEach(b=>{const s=b.dataset.pad,pn=+s[0];b.addEventListener('pointerdown',e=>{e.preventDefault();if(s[1]==='D'){const c=ctl(pn);if(c)drop(c[0],c[1])}else pads[s]=true});['pointerup','pointerleave','pointercancel'].forEach(t=>b.addEventListener(t,()=>{pads[s]=false}))});
+function held(pn,s){return pads[pn+s]||keys[(pn?KB:KA)[s]]||(pn===0&&!ctl(1)&&keys[KB[s]])}
+function moveAims(){for(const pn of[0,1]){const c=ctl(pn);if(!c)continue;const B=boards[c[0]],P=B.players[c[1]],d=(held(pn,'L')?-1:0)+(held(pn,'R')?1:0);if(d)P.x=Math.max(10,Math.min(W-10,P.x+d*(performance.now()<B.glueUntil?2.5:7)))}}
+el('items').addEventListener('click',e=>{const b=e.target.closest('button[data-k]');if(b)useItem(+b.dataset.b,b.dataset.k)});
+el('pauseBtn').onclick=togglePause;el('restartBtn').onclick=reset;el('singleBtn').onclick=()=>changeMode('single');el('coopBtn').onclick=()=>changeMode('coop');el('battleBtn').onclick=()=>changeMode('battle');el('localBtn').onclick=()=>changeNet('local');el('onlineBtn').onclick=()=>changeNet('online');
+el('copyBtn').onclick=()=>{const v=el('myId').value;if(!v){say('房间码尚未生成。');return}navigator.clipboard?.writeText(v).then(()=>say('房间码已复制。')).catch(()=>{el('myId').select();say('请手动复制房间码。')})};
+el('newRoomBtn').onclick=()=>{if(conn){say('请先断开当前连接，再重新生成房间码。');return}try{if(peer)peer.destroy()}catch(_){}peer=null;el('myId').value='';netMsg('正在重新生成房间码……');connectPeer()};
+el('connectBtn').onclick=()=>{const id=el('peerId').value.trim();if(!id||!peer){say('请先等待自己的房间码生成，并输入朋友的房间码。');return}if(conn)conn.close();isHost=false;net='online';conn=peer.connect(id,{reliable:true});bindConn();netMsg('正在连接朋友……')};
+el('disconnectBtn').onclick=()=>{if(conn){const c=conn;conn=null;c.close();build();netMsg('已断开连接。')}};
+// ---------- 主循环 ----------
+let last=performance.now(),acc=0,lastNet=0;
+function loop(){const n=performance.now();acc=Math.min(acc+n-last,100);last=n;
+ if(!paused&&!matchOver()){moveAims();while(acc>=1000/60){boards.forEach(B=>{if(!B.remote)step(B)});acc-=1000/60}}else acc=0;
+ if(online()&&n-lastNet>80){lastNet=n;const m=eff();if((m==='coop'&&isHost)||m==='battle')send({type:'snap',s:snap(boards[0])});else if(m==='coop')send({type:'aim',x:boards[0].players[1].x})}
+ draw();requestAnimationFrame(loop)}
+for(let i=1;i<=11;i++)loadAsset(i,['png','jpg','jpeg','webp']);
+build();setInterval(syncUI,200);loop();
+})();
+</script></body></html>
